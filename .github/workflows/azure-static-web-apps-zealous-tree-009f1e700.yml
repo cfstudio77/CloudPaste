@@ -1,38 +1,94 @@
-name: Azure Static Web Apps CI/CD
+name: Azure Static Web Apps CI/CD (CloudPaste Frontend)
 
 on:
   push:
-    branches:
-      - main
-  pull_request:
-    types: [opened, synchronize, reopened, closed]
-    branches:
-      - main
+    branches: [main, master]
+    paths:
+      - "frontend/**"
+  workflow_dispatch:
+    inputs:
+      from_panel:
+        description: "是否由部署控制面板触发"
+        required: false
+        default: "false"
+  repository_dispatch:
+    types: [deploy-button]
 
 jobs:
-  build_and_deploy_job:
-    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
+  # 1. 检查配置作业 (保留你原有的开关逻辑)
+  check-config:
     runs-on: ubuntu-latest
-    name: Build and Deploy Job
+    outputs:
+      should_deploy: ${{ steps.check.outputs.should_deploy }}
     steps:
-      - uses: actions/checkout@v3
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+
+      - name: 🔍 检查部署配置
+        id: check
+        run: |
+          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+            echo "✅ 手动触发 (repository_dispatch)，允许部署"
+            exit 0
+          fi
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.from_panel }}" != "true" ]]; then
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+            echo "✅ 手动触发 (workflow_dispatch)，允许部署"
+            exit 0
+          fi
+
+          FRONTEND_ENABLED="${{ vars.FRONTEND_DEPLOY }}"
+          [ -z "$FRONTEND_ENABLED" ] && FRONTEND_ENABLED="true"
+
+          if [ "$FRONTEND_ENABLED" = "true" ]; then
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_deploy=false" >> $GITHUB_OUTPUT
+          fi
+
+  # 2. 部署到 Azure 作业
+  deploy-frontend-azure:
+    needs: check-config
+    if: needs.check-config.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
         with:
           submodules: true
           lfs: false
-      - name: Build And Deploy
+
+      - name: 🚀 构建并部署到 Azure
         id: builddeploy
         uses: Azure/static-web-apps-deploy@v1
         with:
+          # 使用你的 Azure Token
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_ZEALOUS_TREE_009F1E700 }}
-          repo_token: ${{ secrets.GITHUB_TOKEN }} # Used for Github integrations (i.e. PR comments)
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
           action: "upload"
-          ###### Repository/Build Configurations - These values can be configured to match your app requirements. ######
-          # For more information regarding Static Web App workflow configurations, please visit: https://aka.ms/swaworkflowconfig
-          app_location: "./frontend" # App source code path
-          api_location: "" # Api source code path - optional
-          output_location: "dist" # Built app content directory - optional
-          ###### End of Repository/Build Configurations ######
+          
+          ###### 目录配置 ######
+          app_location: "./frontend"      # 前端代码所在目录
+          api_location: ""                # 没有后端集成则留空
+          output_location: "dist"         # Vite 构建后的输出目录
+          
+        # 注入环境变量 (非常重要：解决 405 错误的关键)
+        env:
+          VITE_APP_ENV: production
+          VITE_ENABLE_DEVTOOLS: false
+          # 请确保在 GitHub Secrets 中设置了 VITE_API_URL
+          VITE_API_URL: ${{ secrets.VITE_API_URL }} 
 
+      - name: 🎉 部署成功信息显示
+        run: |
+          echo "===================================================="
+          echo "✅ CloudPaste 前端已成功部署到 Azure Static Web Apps!"
+          echo "API 地址已注入: ${{ secrets.VITE_API_URL }}"
+          echo "===================================================="
+
+  # 3. 关闭 PR 时清理环境
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
     runs-on: ubuntu-latest
